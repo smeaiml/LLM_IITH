@@ -113,32 +113,27 @@ def user_input(user_question):
         choice = st.selectbox("Select the section:", list(options.keys()))
         selected_doc = options[choice]
     else:
-        selected_doc = docs[0][0]
+        selected_doc = docs[0][0]  # Select the best match
 
-    # Run QA model
-    chain = get_conversational_chain()
-    response = chain({"input_documents": [selected_doc.page_content], "question": user_question})
+    if not selected_doc:
+        st.warning("No document selected.")
+        return
     
-    # Display answer
+    # Debugging Info
+    print("Selected Doc Attributes:", dir(selected_doc))
+
+    # Ensure `selected_doc` has `page_content`
+    page_content = getattr(selected_doc, "page_content", "")
+
+    if not page_content:
+        st.error("Error: Selected document has no content.")
+        return
+
+    # Load question-answering chain
+    chain = get_conversational_chain()
+    response = chain({"input_documents": [page_content], "question": user_question})
+
+    # Display response
     st.write("### Answer:")
     st.write(response["output_text"])
-
-# ---------------- Streamlit UI ---------------- #
-
-st.title("📚 AI-Powered PDF Q&A System")
-st.write("Upload your PDFs, ask questions, and get AI-powered answers!")
-
-# File upload
-uploaded_files = st.file_uploader("Upload PDF files", accept_multiple_files=True, type=["pdf"])
-
-if uploaded_files:
-    st.write("📄 Extracting text and structuring content...")
-    structured_data = get_pdf_text_with_structure(uploaded_files)
-    get_vector_store(structured_data)
-    st.success("✅ Documents processed successfully!")
-
-# User input
-user_question = st.text_input("Ask a question about the document:")
-if user_question:
-    user_input(user_question)
 
