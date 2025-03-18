@@ -106,7 +106,8 @@ def user_input(user_question):
 
     if len(docs) > 1:
         st.markdown("Multiple sections contain relevant information. Please choose one:")
-        options = {f"Chapter {doc.metadata['chapter']} - {doc.metadata['subpart']} - {doc.metadata['section']}": doc for doc in docs}
+        #options = {f"Chapter {doc.metadata['chapter']} - {doc.metadata['subpart']} - {doc.metadata['section']}": doc for doc in docs}
+        options = {f"Chapter {doc.metadata['chapter']} - {doc.metadata['subpart']} - {doc.metadata['section']}": doc for doc, _ in docs}
 
         choice = st.selectbox("Select the section:", list(options.keys()))
         selected_doc = options[choice]
