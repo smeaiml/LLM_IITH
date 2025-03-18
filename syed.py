@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import re
+import pdfplumber
 from PyPDF2 import PdfReader
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -24,45 +25,38 @@ def get_pdf_text_with_structure(pdf_docs):
     structured_data = []
     
     for pdf in pdf_docs:
-        pdf_reader = PdfReader(pdf)
-        current_chapter = None
-        current_subpart = None
-        current_section = None
-        text_buffer = ""
+        with pdfplumber.open(pdf) as pdf_reader:
+            text_buffer = ""
+            current_chapter, current_subpart, current_section = None, None, None
 
-        for page in pdf_reader.pages:
-            text = page.extract_text()
-            if not text:
-                continue
+            for page in pdf_reader.pages:
+                text = page.extract_text() or ""
+                
+                # Detect structure
+                chapter_match = re.search(r'CHAPTER\s+([A-Z0-9]+)', text, re.IGNORECASE)
+                subpart_match = re.search(r'SUBPART\s+([A-Z0-9]+)', text, re.IGNORECASE)
+                section_match = re.search(r'(\d+\.\S+)\s+([\w\s]+)', text)
 
-            # Detect Chapters, Subparts, and Sections based on patterns
-            chapter_match = re.search(r'CHAPTER\s+([A-Z0-9]+)', text, re.IGNORECASE)
-            subpart_match = re.search(r'SUBPART\s+([A-Z0-9]+)', text, re.IGNORECASE)
-            section_match = re.search(r'(\d+\.\S+)\s+([\w\s]+)', text)
-
-            if chapter_match:
-                if text_buffer:
+                if chapter_match:
                     structured_data.append((current_chapter, current_subpart, current_section, text_buffer))
                     text_buffer = ""
-                current_chapter = chapter_match.group(1)
+                    current_chapter = chapter_match.group(1)
 
-            if subpart_match:
-                if text_buffer:
+                if subpart_match:
                     structured_data.append((current_chapter, current_subpart, current_section, text_buffer))
                     text_buffer = ""
-                current_subpart = subpart_match.group(1)
+                    current_subpart = subpart_match.group(1)
 
-            if section_match:
-                if text_buffer:
+                if section_match:
                     structured_data.append((current_chapter, current_subpart, current_section, text_buffer))
                     text_buffer = ""
-                current_section = section_match.group(2)
+                    current_section = section_match.group(2)
 
-            text_buffer += text + "\n"
+                text_buffer += text + "\n"
 
-        if text_buffer:
-            structured_data.append((current_chapter, current_subpart, current_section, text_buffer))
-
+            if text_buffer:
+                structured_data.append((current_chapter, current_subpart, current_section, text_buffer))
+    
     return structured_data
 
 # ---------------- Vector Storage ---------------- #
@@ -72,7 +66,7 @@ def get_vector_store(structured_data):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
     texts = [data[3] for data in structured_data]  # Extract text content
-    metadatas = [{"chapter": data[0], "subpart": data[1], "section": data[2]} for data in structured_data]
+    metadatas = [{"chapter": data[0] or "Unknown", "subpart": data[1] or "Unknown", "section": data[2] or "Unknown"} for data in structured_data]
 
     vector_store = FAISS.from_texts(texts, embedding=embeddings, metadatas=metadatas)
     vector_store.save_local("faiss_index")
@@ -102,49 +96,49 @@ def user_input(user_question):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
 
-    docs = new_db.similarity_search_with_score(user_question, k=5)
+    # Retrieve most relevant documents
+    docs = [(doc, score) for doc, score in new_db.similarity_search_with_score(user_question, k=5) if score > 0.5]
 
+    if not docs:
+        st.warning("No relevant answer found in the context.")
+        return
+
+    # Provide multiple choices if more than one relevant doc
     if len(docs) > 1:
         st.markdown("Multiple sections contain relevant information. Please choose one:")
-        #options = {f"Chapter {doc.metadata['chapter']} - {doc.metadata['subpart']} - {doc.metadata['section']}": doc for doc in docs}
-        options = {f"Chapter {doc.metadata['chapter']} - {doc.metadata['subpart']} - {doc.metadata['section']}": doc for doc, _ in docs}
-
+        options = {
+            f"Chapter {doc.metadata.get('chapter', 'Unknown')} - {doc.metadata.get('subpart', 'Unknown')} - {doc.metadata.get('section', 'Unknown')}": doc
+            for doc, _ in docs
+        }
         choice = st.selectbox("Select the section:", list(options.keys()))
         selected_doc = options[choice]
     else:
-        selected_doc = docs[0]
+        selected_doc = docs[0][0]
 
+    # Run QA model
     chain = get_conversational_chain()
+    response = chain({"input_documents": [selected_doc.page_content], "question": user_question})
     
-    response = chain(
-        {"input_documents": [selected_doc], "question": user_question}, return_only_outputs=True
-    )
+    # Display answer
+    st.write("### Answer:")
+    st.write(response["output_text"])
 
-    st.markdown("### Reply:")
-    st.markdown(f"```\n{response['output_text']}\n```")
+# ---------------- Streamlit UI ---------------- #
 
-# ---------------- Streamlit App ---------------- #
+st.title("📚 AI-Powered PDF Q&A System")
+st.write("Upload your PDFs, ask questions, and get AI-powered answers!")
 
-def main():
-    """Main function to run Streamlit PDF Q&A app."""
-    st.set_page_config(page_title="Chat PDF", layout="wide")
-    st.header("📄 IntelliPDF – Intelligent PDF Interaction")
+# File upload
+uploaded_files = st.file_uploader("Upload PDF files", accept_multiple_files=True, type=["pdf"])
 
-    user_question = st.text_input("💬 Ask a Question from the PDF Files")
+if uploaded_files:
+    st.write("📄 Extracting text and structuring content...")
+    structured_data = get_pdf_text_with_structure(uploaded_files)
+    get_vector_store(structured_data)
+    st.success("✅ Documents processed successfully!")
 
-    if user_question:
-        user_input(user_question)
-
-    with st.sidebar:
-        st.title("📂 Menu:")
-        pdf_docs = st.file_uploader("📌 Upload PDF Files", accept_multiple_files=True)
-        
-        if st.button("🚀 Submit & Process"):
-            with st.spinner("🔄 Processing..."):
-                structured_data = get_pdf_text_with_structure(pdf_docs)
-                get_vector_store(structured_data)
-                st.success("✅ Done!")
-
-if __name__ == "__main__":
-    main()
+# User input
+user_question = st.text_input("Ask a question about the document:")
+if user_question:
+    user_input(user_question)
 
